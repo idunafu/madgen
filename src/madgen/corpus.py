@@ -9,9 +9,11 @@ never be picked as material.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -142,12 +144,7 @@ def segment_frames(f0: np.ndarray, rms_db: np.ndarray, p: SegmentParams) -> list
 PHONEME_ANALYZERS = ("wav2vec2",)
 
 
-def _add_phoneme_segments(conn, digest: str, path: Path, wav16: Path, video_ref: str | None,
-                          device: str = "auto", whisper_model: str = "large-v3") -> None:
-    from .phoneme_analysis import analyze
-
-    audio, _ = sf.read(str(wav16), dtype="float32")
-    segs = analyze(audio, None if device == "auto" else device, whisper_model)
+def _add_phoneme_segments(conn, digest: str, path: Path, video_ref: str | None, segs) -> None:
     progress.stage("writing phoneme segments to DB")
     conn.execute("DELETE FROM phoneme_candidates WHERE segment_id IN "
                  "(SELECT id FROM segments WHERE source_id = ? AND kind = 'phoneme')", (digest,))
@@ -169,6 +166,88 @@ def _add_phoneme_segments(conn, digest: str, path: Path, wav16: Path, video_ref:
     progress.log(f"{path}: {len(segs)} phoneme segments")
 
 
+@dataclass
+class _PhonemeJob:
+    digest: str
+    path: Path
+    wav16: Path
+    video_ref: str | None
+
+
+def _read_transcript(path: Path, settings: dict) -> list[dict] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+    return data["utterances"] if data.get("settings") == settings else None
+
+
+def _analyze_phonemes(conn, jobs: list[_PhonemeJob], device: str, whisper_model: str) -> None:
+    """Two passes: release WhisperX/VAD before loading wav2vec2, once per build."""
+    if not jobs:
+        return
+    from .phoneme_analysis import (
+        PhonemeModel,
+        analyze_utterances,
+        load_transcriber,
+        release_models,
+        transcribe_with_model,
+        unload_transcriber,
+    )
+
+    if device == "auto":
+        import torch
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    settings = {"version": 1, "whisper_model": whisper_model, "device": device, "language": "ja"}
+    transcriber = None
+    try:
+        for i, job in enumerate(jobs, 1):
+            # The filename is keyed by source content; settings invalidate incompatible transcripts.
+            transcript = job.wav16.with_suffix(".transcript.json")
+            if _read_transcript(transcript, settings) is not None:
+                progress.log(f"transcription pass {i}/{len(jobs)}: cached {job.path}")
+                continue
+            progress.log(f"transcription pass {i}/{len(jobs)}: {job.path}")
+            if transcriber is None:
+                transcriber = load_transcriber(device, whisper_model)
+            audio, _ = sf.read(str(job.wav16), dtype="float32")
+            utterances = transcribe_with_model(audio, transcriber)
+            # Atomic replacement keeps completed files reusable after an interruption.
+            temporary = transcript.with_suffix(".tmp")
+            temporary.write_text(json.dumps({"settings": settings, "utterances": utterances},
+                                             ensure_ascii=False), encoding="utf-8")
+            temporary.replace(transcript)
+            del audio
+    finally:
+        if transcriber is not None:
+            unload_transcriber(transcriber)
+        transcriber = None
+        release_models(device)
+
+    progress.log("transcription pass complete; WhisperX and VAD released")
+    model = None
+    try:
+        for i, job in enumerate(jobs, 1):
+            progress.log(f"phoneme pass {i}/{len(jobs)}: {job.path}")
+            utterances = _read_transcript(job.wav16.with_suffix(".transcript.json"), settings)
+            if utterances is None:
+                raise RuntimeError(f"transcript missing or incompatible: {job.path}")
+            segs = []
+            if utterances:
+                if model is None:
+                    progress.stage("loading phoneme model")
+                    model = PhonemeModel(device)
+                audio, _ = sf.read(str(job.wav16), dtype="float32")
+                segs = analyze_utterances(audio, utterances, model)
+                del audio
+            _add_phoneme_segments(conn, job.digest, job.path, job.video_ref, segs)
+            job.wav16.unlink()
+    finally:
+        model = None
+        release_models(device)
+
+
 def build_corpus(sources: list[Path], db_path: Path, workers: int | None = None,
                  params: SegmentParams | None = None, phonemes: str = "none",
                  device: str = "auto", whisper_model: str = "large-v3") -> None:
@@ -177,13 +256,20 @@ def build_corpus(sources: list[Path], db_path: Path, workers: int | None = None,
     params = params or SegmentParams()
     workers = workers or max(1, (os.cpu_count() or 2) - 2)
     cache_dir = db_path.with_suffix(db_path.suffix + ".cache")
-    conn = db.connect(db_path)
+    with closing(db.connect(db_path)) as conn:
+        _build_sources(conn, sources, cache_dir, workers, params, phonemes, device, whisper_model)
 
+
+def _build_sources(conn, sources: list[Path], cache_dir: Path, workers: int, params: SegmentParams,
+                   phonemes: str, device: str, whisper_model: str) -> None:
+    pending: dict[str, _PhonemeJob] = {}
     for path in iter_media(sources):
         print(f"[build-corpus] {path}", file=sys.stderr)
         progress.log(f"source {path}")
         progress.stage("hashing source")
         digest = file_hash(path)
+        if digest in pending:
+            continue
         row = conn.execute("SELECT has_video, phonemes_analyzer FROM sources WHERE source_id = ?",
                            (digest,)).fetchone()
         if row:
@@ -196,9 +282,7 @@ def build_corpus(sources: list[Path], db_path: Path, workers: int | None = None,
             wav16 = cache_dir / f"{digest}.16k.wav"
             progress.stage("decoding audio (16 kHz)")
             ffmpeg.extract_audio(path, wav16, ANALYSIS_SR)
-            _add_phoneme_segments(conn, digest, path, wav16,
-                                  str(path.resolve()) if has_video else None, device, whisper_model)
-            wav16.unlink()
+            pending[digest] = _PhonemeJob(digest, path, wav16, str(path.resolve()) if has_video else None)
             continue
         # The same path with different content: drop the stale analysis.
         for (old,) in conn.execute("SELECT source_id FROM sources WHERE path = ?", (str(path.resolve()),)).fetchall():
@@ -241,6 +325,7 @@ def build_corpus(sources: list[Path], db_path: Path, workers: int | None = None,
         print(f"  {len(records)} segments, {usable_sec:.0f} s of usable voiced sound", file=sys.stderr)
         progress.log(f"{path}: {len(records)} pitch segments")
         if phonemes != "none":
-            _add_phoneme_segments(conn, digest, path, wav16, video_ref, device, whisper_model)
-        wav16.unlink()
-    conn.close()
+            pending[digest] = _PhonemeJob(digest, path, wav16, video_ref)
+        else:
+            wav16.unlink()
+    _analyze_phonemes(conn, list(pending.values()), device, whisper_model)

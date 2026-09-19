@@ -69,26 +69,51 @@ def _log(msg: str) -> None:
     progress.log(msg.strip())
 
 
-def transcribe(audio: np.ndarray, device: str, batch_size: int = 8,
-               model_name: str = WHISPER_MODEL) -> list[dict]:
+def release_models(device: str) -> None:
+    """Release allocator caches after callers have dropped their model references."""
+    import torch
+
+    gc.collect()
+    if device == "cuda":
+        torch.cuda.empty_cache()
+
+
+def load_transcriber(device: str, model_name: str = WHISPER_MODEL):
     import os
 
-    import torch
     import whisperx
 
     compute_type = "float16" if device == "cuda" else "int8"
     progress.stage(f"loading whisperX model ({model_name}, {device})")
-    model = whisperx.load_model(model_name, device, compute_type=compute_type, language="ja",
-                                threads=(os.cpu_count() or 4) if device == "cpu" else 4)
+    return whisperx.load_model(model_name, device, compute_type=compute_type, language="ja",
+                               threads=(os.cpu_count() or 4) if device == "cpu" else 4)
+
+
+def transcribe_with_model(audio: np.ndarray, model, batch_size: int = 8) -> list[dict]:
     # The voice activity detection over the whole file runs first and reports nothing.
     progress.stage("whisperX: voice detection, then transcription (%)", 100)
     result = model.transcribe(audio, batch_size=batch_size, language="ja", print_progress=True,
                               progress_callback=progress.update)
-    del model
-    gc.collect()
-    if device == "cuda":
-        torch.cuda.empty_cache()
     return [s for s in result["segments"] if s.get("text", "").strip()]
+
+
+def unload_transcriber(model) -> None:
+    """Explicitly release CT2 weights/cache and move the default Pyannote VAD off GPU."""
+    import torch
+
+    model.model.model.unload_model()
+    model.vad_model.vad_pipeline.to(torch.device("cpu"))
+
+
+def transcribe(audio: np.ndarray, device: str, batch_size: int = 8,
+               model_name: str = WHISPER_MODEL) -> list[dict]:
+    model = load_transcriber(device, model_name)
+    try:
+        return transcribe_with_model(audio, model, batch_size)
+    finally:
+        unload_transcriber(model)
+        del model
+        release_models(device)
 
 
 class PhonemeModel:
@@ -158,9 +183,20 @@ def analyze(audio: np.ndarray, device: str | None = None,
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     _log(f"  transcribing with whisperX {model_name} on {device}")
     utterances = transcribe(audio, device, model_name=model_name)
-    _log(f"  {len(utterances)} utterances; aligning phonemes with {PHONEME_MODEL}")
+    if not utterances:
+        return []
     progress.stage("loading phoneme model")
     model = PhonemeModel(device)
+    try:
+        return analyze_utterances(audio, utterances, model)
+    finally:
+        del model
+        release_models(device)
+
+
+def analyze_utterances(audio: np.ndarray, utterances: list[dict], model: PhonemeModel) -> list[PhonemeSegment]:
+    """Analyze saved transcripts using an existing phoneme model, without loading WhisperX."""
+    _log(f"  {len(utterances)} utterances; aligning phonemes with {PHONEME_MODEL}")
     progress.stage("phoneme alignment (utterances)", len(utterances))
 
     all_rms = []
