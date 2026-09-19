@@ -170,7 +170,7 @@ uv run --extra lyrics --extra cpu madgen build-corpus --source sources/ --db wor
 | `--db FILE` | — | 素材 DB（SQLite）。解析済みの音声は `DB名.cache/` に置かれる |
 | `--phonemes wav2vec2` | `none` | 歌詞モード用の音素解析も行う（lyrics extra が必要） |
 | `--device` | `auto` | 音素解析を動かす場所。`auto`（GPU があれば GPU）/ `cuda` / `cpu` |
-| `--workers N` | CPU コア数 − 2 | 素材のデコード・音高解析の並列数。素材が1件の場合は音高解析のチャンク並列数 |
+| `--workers N` | CPU コア数 − 2 | 素材のデコード・音高解析の並列数。素材が1件の場合は音高解析のチャンク並列数。GPU音素解析時のCPU後処理にも使用 |
 | `--log FILE` | `DB名.log` | 進捗ログ |
 
 同じ内容のファイル（ハッシュで判定）は二度解析しません。同じパスで内容が変わったファイルは、古い解析結果を消して解析し直します。
@@ -207,6 +207,8 @@ uv run --extra lyrics --extra cpu madgen build-corpus --source sources/ --db wor
 **音素解析**（`build-corpus --phonemes wav2vec2`）: whisperX large-v3 で書き起こし → pyopenjtalk で音素に変換 → wav2vec2 の音素認識モデル（`facebook/wav2vec2-xlsr-53-espeak-cv-ft`）の posteriorgram に強制アライメントして区切ります。各区間の候補は、その区間で事後確率の総量が大きい上位3音素です（確信度は正規化した値）。アライメントの確率が低すぎる発話（音楽やノイズに対する whisper の誤認識が多い）は、まるごと除外します。
 
 大量の素材は2段階で処理します。まず未解析の全素材を WhisperX＋VAD で書き起こし、そのモデルを解放してから wav2vec2 で音素解析します。各モデルの読み込みは1回で、3モデルを同時に GPU に保持しません。書き起こしは `DB名.cache/` 内の `*.transcript.json` に保存され、同じコマンドを再実行すると、保存済みの書き起こしと解析済み素材を再利用します。音素解析に入るまでは、DBには音高解析の結果のみが入ります。
+
+GPUでの音素解析は、1発話ずつの推論とCPUでの位置合わせ・ピッチ推定・候補集計を重ねて処理します。CPU後処理は `--workers` 個まで並列化し、先行処理する発話数にも上限を設けています。モデルを複製せず、素材・発話の順番とファイル全体での音量判定を維持します。`--workers 1` または `--device cpu` では逐次処理します。
 
 段階間の16 kHzモノラル音声も一時的にキャッシュするため、未解析素材1時間あたり約115 MBの追加ディスク領域を使います。音素解析を保存したファイルから順に、この一時音声を削除します。必要なVRAMは各段階の入力長・バッチサイズにも依存するため、8 GBで常に収まる保証ではありません。
 

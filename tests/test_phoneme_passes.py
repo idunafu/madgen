@@ -45,6 +45,9 @@ def pipeline(tmp_path, monkeypatch):
             state["phoneme_loads"] += 1
             state["phoneme_ref"] = weakref.ref(self)
 
+        def posteriors(self, audio):
+            return np.empty(0)
+
     def align(audio, utterances, model):
         label = utterances[0]["text"]
         assert label == str(round(float(audio[0]), 1))
@@ -61,6 +64,9 @@ def pipeline(tmp_path, monkeypatch):
     monkeypatch.setattr(pa, "transcribe_with_model", transcribe)
     monkeypatch.setattr(pa, "PhonemeModel", PhonemeModel)
     monkeypatch.setattr(pa, "analyze_utterances", align)
+    monkeypatch.setattr(pa, "_g2p", lambda text: ["a"])
+    monkeypatch.setattr(pa, "_postprocess_utterance", lambda audio, a0, phones, probs, model: (
+        [(seg, "a", 1.) for seg in align(audio, [{"text": str(round(float(audio[0]), 1))}], model)], 0))
     monkeypatch.setattr(pa, "release_models", lambda device: gc.collect())
     return sources, tmp_path / "corpus.sqlite", state
 
@@ -132,3 +138,19 @@ def test_empty_transcripts_skip_phoneme_model(pipeline):
     assert state["asr_loads"] == 1 and state["phoneme_loads"] == 0
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT count(*) FROM sources WHERE phonemes_analyzer='wav2vec2'").fetchone()[0] == 3
+
+
+def test_parallel_postprocessing_failure_resumes_from_committed_file(pipeline):
+    sources, path, state = pipeline
+    state["fail_alignment"] = "0.2"
+    with pytest.raises(RuntimeError, match="interrupted alignment"):
+        corpus.build_corpus(sources, path, workers=2, phonemes="wav2vec2", device="cuda")
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT path FROM sources WHERE phonemes_analyzer='wav2vec2'").fetchall() == [
+            (str(sources[0].resolve()),)]
+    state["fail_alignment"] = None
+    corpus.build_corpus(sources, path, workers=2, phonemes="wav2vec2", device="cuda")
+    assert state["asr_loads"] == 1 and state["phoneme_loads"] == 2
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT count(*) FROM sources WHERE phonemes_analyzer='wav2vec2'").fetchone()[0] == 3
+        assert conn.execute("SELECT count(*) FROM phoneme_candidates").fetchone()[0] == 9

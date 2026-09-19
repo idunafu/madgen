@@ -92,7 +92,7 @@ def test_parallel_preparation_passes_ordered_unique_phoneme_jobs(tmp_path, monke
     corpus.build_corpus([paths[0]], database, workers=1)
     batches = []
 
-    def phonemes(conn, jobs, device, model):
+    def phonemes(conn, jobs, device, model, workers):
         batches.append(jobs)
         for job in jobs:
             assert job.wav16.is_file()

@@ -22,6 +22,9 @@ import gc
 import json
 import sys
 import warnings
+from collections import deque
+from collections.abc import Iterable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
@@ -199,9 +202,19 @@ def analyze_utterances(audio: np.ndarray, utterances: list[dict], model: Phoneme
     _log(f"  {len(utterances)} utterances; aligning phonemes with {PHONEME_MODEL}")
     progress.stage("phoneme alignment (utterances)", len(utterances))
 
-    all_rms = []
-    raw: list[tuple[PhonemeSegment, str, float]] = []  # (segment, transcript phoneme, voiced ratio)
+    raw = []
     skipped = 0
+    for ui, a0, chunk, phonemes in _utterance_chunks(audio, utterances):
+        result, rejected = _postprocess_utterance(chunk, a0, phonemes, model.posteriors(chunk), model)
+        raw.extend(result)
+        skipped += rejected
+        progress.update(ui + 1)
+        if (ui + 1) % 200 == 0:
+            _log(f"  aligned {ui + 1}/{len(utterances)} utterances")
+    return _finish_source(raw, skipped)
+
+
+def _utterance_chunks(audio: np.ndarray, utterances: list[dict]) -> Iterator[tuple[int, int, np.ndarray, list[str]]]:
     for ui, utt in enumerate(utterances):
         phonemes = _g2p(utt["text"])
         if not phonemes:
@@ -211,52 +224,60 @@ def analyze_utterances(audio: np.ndarray, utterances: list[dict], model: Phoneme
         chunk = audio[a0:a1]
         if len(chunk) < SR * 0.1:
             continue
-        probs = model.posteriors(chunk)
-        spans = model.align(probs, phonemes)
-        if spans is None or np.exp(np.mean(np.log([max(p, 1e-6) for *_, p in spans]))) < MIN_ALIGN_PROB:
-            skipped += 1
+        yield ui, a0, chunk, phonemes
+
+
+# Segment, transcript phoneme, voiced ratio. Filtering stays at the source-file level.
+_RawSegments = list[tuple[PhonemeSegment, str, float]]
+
+
+def _postprocess_utterance(chunk: np.ndarray, a0: int, phonemes: list[str], probs: np.ndarray,
+                           model: PhonemeModel) -> tuple[_RawSegments, int]:
+    """CPU only: model.align/mass read token tables; they never execute the GPU model."""
+    spans = model.align(probs, phonemes)
+    if spans is None or np.exp(np.mean(np.log([max(p, 1e-6) for *_, p in spans]))) < MIN_ALIGN_PROB:
+        return [], 1
+    frame_sec = len(chunk) / SR / len(probs)
+    mass = model.phoneme_mass(probs)
+    cum = np.vstack([np.zeros(mass.shape[1]), np.cumsum(mass, axis=0)])
+
+    x = chunk.astype(np.float64)
+    f0, f0_t = pyworld.dio(x, SR, frame_period=5.0, f0_floor=60.0, f0_ceil=1100.0)
+    f0 = pyworld.stonemask(x, f0, f0_t, SR)
+
+    raw = []
+    for pi, (ph, (s, e, _)) in enumerate(zip(phonemes, spans, strict=True)):
+        # A phoneme lasts from its first frame to the next phoneme's first frame, capped.
+        end = spans[pi + 1][0] if pi + 1 < len(spans) else e + 1
+        cap = MAX_SEG_SEC["vowel" if is_voiced_sustained(ph) else "consonant"]
+        end = min(end, s + max(1, int(round(cap / frame_sec))), len(probs))
+        if end <= s:
             continue
-        frame_sec = len(chunk) / SR / len(probs)
-        mass = model.phoneme_mass(probs)
-        cum = np.vstack([np.zeros(mass.shape[1]), np.cumsum(mass, axis=0)])
+        m = (cum[end] - cum[s]) / (end - s)
+        order = np.argsort(m)[::-1][:3]
+        conf = m[order] / max(m.sum(), 1e-9)
+        cands = [(INVENTORY[j], round(float(c), 4)) for j, c in zip(order, conf, strict=True)]
 
-        x = chunk.astype(np.float64)
-        f0, f0_t = pyworld.dio(x, SR, frame_period=5.0, f0_floor=60.0, f0_ceil=1100.0)
-        f0 = pyworld.stonemask(x, f0, f0_t, SR)
+        t0, t1 = s * frame_sec, end * frame_sec
+        seg_f0 = f0[int(t0 * 200): max(int(t0 * 200) + 1, int(t1 * 200))]
+        voiced = seg_f0[seg_f0 > 0]
+        samples = x[int(t0 * SR): int(t1 * SR)]
+        rms = 20 * np.log10(np.sqrt(np.mean(samples ** 2)) + 1e-12) if samples.size else -120.0
+        voiced_ratio = voiced.size / max(1, seg_f0.size)
+        if voiced.size >= 3:
+            med = float(np.median(voiced))
+            std = float(np.std(1200 * np.log2(voiced / med)))
+        else:
+            med, std = None, 0.0
+        raw.append((PhonemeSegment(a0 / SR + t0, a0 / SR + t1, cands[0][0], cands, med, std, float(rms)),
+                    ph, voiced_ratio))
+    return raw, 0
 
-        for pi, (ph, (s, e, _)) in enumerate(zip(phonemes, spans, strict=True)):
-            # A phoneme lasts from its first frame to the next phoneme's first frame, capped.
-            end = spans[pi + 1][0] if pi + 1 < len(spans) else e + 1
-            cap = MAX_SEG_SEC["vowel" if is_voiced_sustained(ph) else "consonant"]
-            end = min(end, s + max(1, int(round(cap / frame_sec))), len(probs))
-            if end <= s:
-                continue
-            m = (cum[end] - cum[s]) / (end - s)
-            order = np.argsort(m)[::-1][:3]
-            conf = m[order] / max(m.sum(), 1e-9)
-            cands = [(INVENTORY[j], round(float(c), 4)) for j, c in zip(order, conf, strict=True)]
 
-            t0, t1 = s * frame_sec, end * frame_sec
-            seg_f0 = f0[int(t0 * 200): max(int(t0 * 200) + 1, int(t1 * 200))]
-            voiced = seg_f0[seg_f0 > 0]
-            samples = x[int(t0 * SR): int(t1 * SR)]
-            rms = 20 * np.log10(np.sqrt(np.mean(samples ** 2)) + 1e-12) if samples.size else -120.0
-            voiced_ratio = voiced.size / max(1, seg_f0.size)
-            if voiced.size >= 3:
-                med = float(np.median(voiced))
-                std = float(np.std(1200 * np.log2(voiced / med)))
-            else:
-                med, std = None, 0.0
-            raw.append((PhonemeSegment(a0 / SR + t0, a0 / SR + t1, cands[0][0], cands, med, std, float(rms)),
-                        ph, voiced_ratio))
-            all_rms.append(rms)
-        progress.update(ui + 1)
-        if (ui + 1) % 200 == 0:
-            _log(f"  aligned {ui + 1}/{len(utterances)} utterances")
-
+def _finish_source(raw: _RawSegments, skipped: int) -> list[PhonemeSegment]:
     if not raw:
         return []
-    loud = float(np.percentile(all_rms, 95))
+    loud = float(np.percentile([seg.rms_db for seg, _, _ in raw], 95))
     threshold = max(-45.0, loud - 35.0)
     kept = [
         seg for seg, label, voiced_ratio in raw
@@ -268,4 +289,63 @@ def analyze_utterances(audio: np.ndarray, utterances: list[dict], model: Phoneme
     _log(f"  {len(kept)} phoneme segments kept of {len(raw)} "
          f"({skipped} utterances skipped as implausible)")
     return kept
+
+
+def analyze_sources(sources: Iterable[tuple[np.ndarray, list[dict]]], device: str,
+                    workers: int = 1) -> Iterator[list[PhonemeSegment]]:
+    """Ordered source results, with single-utterance inference overlapping CPU work.
+
+    The caller must close this iterator if saving a result fails. Workers share read-only
+    token tables on the one model; only this thread calls posteriors or updates progress.
+    """
+    model = None
+    pool = None
+    # None marks the end of a file, including an empty transcript. Consume in input order.
+    queue: deque[Future | None] = deque()
+    raw: _RawSegments = []
+    skipped = 0
+
+    def consume() -> Iterator[list[PhonemeSegment]]:
+        nonlocal raw, skipped
+        future = queue.popleft()
+        if future is None:
+            segments = _finish_source(raw, skipped)
+            raw, skipped = [], 0
+            yield segments
+        else:
+            result, rejected = future.result()
+            raw.extend(result)
+            skipped += rejected
+
+    try:
+        for audio, utterances in sources:
+            if utterances and model is None:
+                progress.stage("loading phoneme model")
+                model = PhonemeModel(device)
+            if workers <= 1:
+                yield analyze_utterances(audio, utterances, model) if utterances else []
+                continue
+            _log(f"  {len(utterances)} utterances; inferring phonemes with {PHONEME_MODEL}")
+            progress.stage("phoneme inference (utterances)", len(utterances))
+            for ui, a0, chunk, phonemes in _utterance_chunks(audio, utterances):
+                probs = model.posteriors(chunk)
+                if pool is None:
+                    pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="phoneme-cpu")
+                # Copy the slice so queued work does not retain a whole long source waveform.
+                queue.append(pool.submit(_postprocess_utterance, chunk.copy(), a0, phonemes, probs, model))
+                progress.update(ui + 1)
+                if len(queue) >= workers * 2:
+                    yield from consume()
+            queue.append(None)
+            # Drain completed files promptly; otherwise continue inference on the next file.
+            while queue and (len(queue) >= workers * 2 or queue[0] is None or queue[0].done()):
+                yield from consume()
+        while queue:
+            yield from consume()
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=True, cancel_futures=True)
+        queue.clear()
+        model = None
+        release_models(device)
 

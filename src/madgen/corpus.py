@@ -189,13 +189,12 @@ def _read_transcript(path: Path, settings: dict) -> list[dict] | None:
     return data["utterances"] if data.get("settings") == settings else None
 
 
-def _analyze_phonemes(conn, jobs: list[_PhonemeJob], device: str, whisper_model: str) -> None:
+def _analyze_phonemes(conn, jobs: list[_PhonemeJob], device: str, whisper_model: str, workers: int = 1) -> None:
     """Two passes: release WhisperX/VAD before loading wav2vec2, once per build."""
     if not jobs:
         return
     from .phoneme_analysis import (
-        PhonemeModel,
-        analyze_utterances,
+        analyze_sources,
         load_transcriber,
         release_models,
         transcribe_with_model,
@@ -233,26 +232,21 @@ def _analyze_phonemes(conn, jobs: list[_PhonemeJob], device: str, whisper_model:
         release_models(device)
 
     progress.log("transcription pass complete; WhisperX and VAD released")
-    model = None
-    try:
+
+    def sources():
         for i, job in enumerate(jobs, 1):
             progress.log(f"phoneme pass {i}/{len(jobs)}: {job.path}")
             utterances = _read_transcript(job.wav16.with_suffix(".transcript.json"), settings)
             if utterances is None:
                 raise RuntimeError(f"transcript missing or incompatible: {job.path}")
-            segs = []
-            if utterances:
-                if model is None:
-                    progress.stage("loading phoneme model")
-                    model = PhonemeModel(device)
-                audio, _ = sf.read(str(job.wav16), dtype="float32")
-                segs = analyze_utterances(audio, utterances, model)
-                del audio
+            audio = sf.read(str(job.wav16), dtype="float32")[0] if utterances else np.empty(0, dtype=np.float32)
+            yield audio, utterances
+
+    # CPU inference already uses CPU threads; overlap the postprocessing only on the GPU path.
+    with closing(analyze_sources(sources(), device, workers if device == "cuda" else 1)) as results:
+        for job, segs in zip(jobs, results, strict=True):
             _add_phoneme_segments(conn, job.digest, job.path, job.video_ref, segs)
             job.wav16.unlink()
-    finally:
-        model = None
-        release_models(device)
 
 
 def build_corpus(sources: list[Path], db_path: Path, workers: int | None = None,
@@ -390,4 +384,4 @@ def _build_sources(conn, sources: list[Path], cache_dir: Path, workers: int, par
                 _save_source(conn, job, _prepare_source(job, params, workers, report_progress=True), pending, phonemes)
         while queue:
             save_next()
-    _analyze_phonemes(conn, list(pending.values()), device, whisper_model)
+    _analyze_phonemes(conn, list(pending.values()), device, whisper_model, workers)
