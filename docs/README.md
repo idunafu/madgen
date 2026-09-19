@@ -5,6 +5,7 @@
 各報告にある「既定」「実装済み」やPraat用CLIオプションは実験時点の実装を指す。mainの歌詞合成は従来のWORLD経路であり、Praat依存やオプションは追加していない。Praatを使う再現スクリプトは `codex/praat` とローカルの入力・解析キャッシュが必要。報告内のPraat実装への相対リンクも同ブランチで参照する。
 
 - [最新の評価と分岐の理由](praat-world-assessment.md): 息・滑舌の問題と、WORLDを比較基準にする判断。
+- [mainのWORLD改善](world-improvements.md): 実使用コアの共有、子音調整、従来WORLDとの比較。
 - [既存実装の照合・改善点](lyrics-implementation-review.md)
 - [当初の設計調査](lyrics-rendering-design.md)
 - [原音保持経路の実装・検証](source-renderer-implementation.md)

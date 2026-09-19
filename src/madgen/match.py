@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .db import Corpus
+from .progress import progress
 from .target import TargetUnit, hz_to_midi
 
 
@@ -150,7 +151,8 @@ def _lower_tier(unit: TargetUnit, corpus: Corpus, idx: np.ndarray, use_pitch: bo
     return cost
 
 
-def select_units_lyrics(units: list[TargetUnit], corpus: Corpus, w: LyricsWeights | None = None) -> np.ndarray:
+def select_units_lyrics(units: list[TargetUnit], corpus: Corpus, w: LyricsWeights | None = None,
+                        *, core_store=None) -> np.ndarray:
     from .phonemes import is_voiced_sustained
 
     w = w or LyricsWeights()
@@ -186,13 +188,30 @@ def select_units_lyrics(units: list[TargetUnit], corpus: Corpus, w: LyricsWeight
                 phon_cache[u.phoneme] = phoneme_cost(u.phoneme, corpus.cand_phoneme, corpus.cand_conf, w)
             idx = np.arange(len(corpus))
             t1 = phon_cache[u.phoneme]
-        t2 = _lower_tier(u, corpus, idx, use_pitch, w)
+        if core_store is not None and use_pitch:
+            # Tier 1 dominates the whole path; fully connected transitions cannot rescue
+            # a worse phoneme tier. Analyze every tied best candidate, not a DB-F0 shortlist.
+            best = t1 == t1.min()
+            idx, t1 = idx[best], t1[best]
+            plans = [core_store.plan(int(j), u.duration_sec) for j in idx]
+            refs = np.array([p.reference_f0 for p in plans])
+            cents = np.where(np.isnan(refs), np.inf,
+                             np.abs(1200 * np.log2(u.target_f0_hz / np.nan_to_num(refs, nan=1.))))
+            pitch = np.minimum(np.ceil(np.maximum(0., cents - w.pitch_free_cents) / w.pitch_step_cents),
+                               w.pitch_max_steps)
+            # Three cost steps per doubling, bounded to keep tier packing valid.
+            warp = np.minimum(np.ceil(3 * np.log2([p.stretch_ratio for p in plans])), w.coverage_steps)
+            t2 = (pitch + warp).astype(np.int64)
+        else:
+            t2 = _lower_tier(u, corpus, idx, use_pitch, w)
         packed = t1 * tier1_scale + t2 * tier2_scale
         take = np.argpartition(packed, k - 1)[:k] if k < len(packed) else np.arange(len(packed))
         if len(take) < k:  # tiny corpus: repeat the best to fill the table
             take = np.resize(take[np.argsort(packed[take])], k)
         cand[i] = idx[take]
         local[i] = packed[take]
+        if core_store is not None:
+            progress.update(i + 1)
 
     score = local[0].copy()
     back = np.zeros((n, k), dtype=np.int64)

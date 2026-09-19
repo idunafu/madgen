@@ -1,0 +1,223 @@
+{
+  "range_sec": [
+    18,
+    30
+  ],
+  "full": true,
+  "common_master_gain": 1.2762227575713012,
+  "common_headroom_gain": 1.0,
+  "changed_materials": 492,
+  "analyzed_segments": 9113,
+  "variants": {
+    "00-legacy": {
+      "peak": 0.891243040561676,
+      "pitch_shift_cents_p50_p90": [
+        53.00262326085231,
+        225.01813621316114
+      ],
+      "stretch_ratio_p50_p90_max": [
+        2.0,
+        4.1,
+        12.5
+      ],
+      "trimmed_consonants": 0,
+      "consonant_gain_db_p50_p90_max": null,
+      "ta_at_19_56": {
+        "index": 40,
+        "phoneme": "t",
+        "segment_id": 16214,
+        "output_start": 862399,
+        "output_length": 2648,
+        "reference_f0": 422.8729062748416,
+        "stretch_ratio": 1.0,
+        "corrected": false,
+        "core": null,
+        "consonant": null
+      }
+    },
+    "01-core-fixed": {
+      "peak": 0.891243040561676,
+      "pitch_shift_cents_p50_p90": [
+        54.34263177166568,
+        213.8177316375056
+      ],
+      "stretch_ratio_p50_p90_max": [
+        2.0,
+        4.1,
+        12.5
+      ],
+      "trimmed_consonants": 0,
+      "consonant_gain_db_p50_p90_max": null,
+      "ta_at_19_56": {
+        "index": 40,
+        "phoneme": "t",
+        "segment_id": 16214,
+        "output_start": 862399,
+        "output_length": 2648,
+        "reference_f0": 422.8729062748416,
+        "stretch_ratio": 1.0,
+        "corrected": false,
+        "core": null,
+        "consonant": null
+      }
+    },
+    "02-consonants-fixed": {
+      "peak": 0.891243040561676,
+      "pitch_shift_cents_p50_p90": [
+        53.00262326085231,
+        225.01813621316114
+      ],
+      "stretch_ratio_p50_p90_max": [
+        2.0,
+        4.1,
+        12.5
+      ],
+      "trimmed_consonants": 47,
+      "consonant_gain_db_p50_p90_max": [
+        2.811016321945834,
+        6.0,
+        6.0
+      ],
+      "ta_at_19_56": {
+        "index": 40,
+        "phoneme": "t",
+        "segment_id": 16214,
+        "output_start": 864025,
+        "output_length": 1020,
+        "reference_f0": 422.8729062748416,
+        "stretch_ratio": 1.0,
+        "corrected": false,
+        "core": null,
+        "consonant": {
+          "source_start": 13103,
+          "source_end": 14123,
+          "output_start": 864025,
+          "gain": 1.419949211340056,
+          "burst_trimmed": true
+        }
+      }
+    },
+    "03-core-selected": {
+      "peak": 0.8759241104125977,
+      "pitch_shift_cents_p50_p90": [
+        68.75874844063412,
+        182.54474300012043
+      ],
+      "stretch_ratio_p50_p90_max": [
+        1.0649350649350648,
+        2.231168831168832,
+        4.648648648648648
+      ],
+      "trimmed_consonants": 0,
+      "consonant_gain_db_p50_p90_max": null,
+      "ta_at_19_56": {
+        "index": 40,
+        "phoneme": "t",
+        "segment_id": 16214,
+        "output_start": 862399,
+        "output_length": 2648,
+        "reference_f0": 422.8729062748416,
+        "stretch_ratio": 1.0,
+        "corrected": false,
+        "core": null,
+        "consonant": null
+      }
+    },
+    "04-combined": {
+      "peak": 0.8759241104125977,
+      "pitch_shift_cents_p50_p90": [
+        68.75874844063412,
+        182.54474300012043
+      ],
+      "stretch_ratio_p50_p90_max": [
+        1.0649350649350648,
+        2.231168831168832,
+        4.648648648648648
+      ],
+      "trimmed_consonants": 49,
+      "consonant_gain_db_p50_p90_max": [
+        3.0454562168270005,
+        6.0,
+        6.0
+      ],
+      "ta_at_19_56": {
+        "index": 40,
+        "phoneme": "t",
+        "segment_id": 16214,
+        "output_start": 864025,
+        "output_length": 1020,
+        "reference_f0": 422.8729062748416,
+        "stretch_ratio": 1.0,
+        "corrected": false,
+        "core": null,
+        "consonant": {
+          "source_start": 13103,
+          "source_end": 14123,
+          "output_start": 864025,
+          "gain": 1.419949211340056,
+          "burst_trimmed": true
+        }
+      }
+    }
+  },
+  "audio": {
+    "00-legacy-mix-18-30.wav": {
+      "seconds": 12.0,
+      "peak": 0.7902993559837341
+    },
+    "00-legacy-mix.wav": {
+      "seconds": 171.01374149659864,
+      "peak": 0.891243040561676
+    },
+    "00-legacy-vocals-18-30.wav": {
+      "seconds": 12.0,
+      "peak": 0.7304136157035828
+    },
+    "00-legacy-vocals.wav": {
+      "seconds": 171.01374149659864,
+      "peak": 0.7304136157035828,
+      "outside_units_and_legacy_tails_peak": 0.0
+    },
+    "01-core-fixed-mix-18-30.wav": {
+      "seconds": 12.0,
+      "peak": 0.7902993559837341
+    },
+    "01-core-fixed-vocals-18-30.wav": {
+      "seconds": 12.0,
+      "peak": 0.7304136157035828
+    },
+    "02-consonants-fixed-mix-18-30.wav": {
+      "seconds": 12.0,
+      "peak": 0.7902993559837341
+    },
+    "02-consonants-fixed-vocals-18-30.wav": {
+      "seconds": 12.0,
+      "peak": 0.7304136157035828
+    },
+    "03-core-selected-mix-18-30.wav": {
+      "seconds": 12.0,
+      "peak": 0.5573487877845764
+    },
+    "03-core-selected-vocals-18-30.wav": {
+      "seconds": 12.0,
+      "peak": 0.48207494616508484
+    },
+    "04-combined-mix-18-30.wav": {
+      "seconds": 12.0,
+      "peak": 0.5573487877845764
+    },
+    "04-combined-mix.wav": {
+      "seconds": 171.01374149659864,
+      "peak": 0.8759241104125977
+    },
+    "04-combined-vocals-18-30.wav": {
+      "seconds": 12.0,
+      "peak": 0.48207494616508484
+    },
+    "04-combined-vocals.wav": {
+      "seconds": 171.01374149659864,
+      "peak": 0.7002889513969421,
+      "outside_units_and_legacy_tails_peak": 0.0
+    }
+  }
+}

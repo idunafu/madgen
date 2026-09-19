@@ -14,7 +14,7 @@ import re
 import shutil
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
@@ -362,6 +362,12 @@ def render(args: argparse.Namespace) -> None:
     progress.log(f"corpus {sizes}, {len(voices)} voices, {total_sec:.1f} s")
 
     rendered: list[RenderedVoice] = []
+    core_store = None
+    if any(v.lyrics for v in voices) and args.lyrics_selection == "core" and not args.no_lyrics_stretch:
+        from .world_plans import WorldPlanStore
+
+        cache_dir = args.db.with_suffix(args.db.suffix + ".cache") / "world-core-v1"
+        core_store = WorldPlanStore(corpora["phoneme"], cache_dir)
     plan = []
     corrected = 0
     # The kit is built before anything is matched, and shared by every drum voice: one sound per
@@ -379,15 +385,16 @@ def render(args: argparse.Namespace) -> None:
     for voice in voices:
         sampled_drums = voice in drums and args.percussion == "samples"
         corpus = corpora["phoneme" if voice.lyrics or sampled_drums else "pitch"]
-        progress.stage(f"matching {voice.label} ({len(voice.units)} units)")
+        progress.stage(f"matching {voice.label} ({len(voice.units)} units)",
+                       len(voice.units) if voice.lyrics and core_store is not None else None)
         if voice.lyrics:
-            path = select_units_lyrics(voice.units, corpus, lyrics_weights)
+            path = select_units_lyrics(voice.units, corpus, lyrics_weights, core_store=core_store)
         elif sampled_drums:
             path = select_units_percussion(voice.units, corpus, drum_samples, drum_materials)
         else:
             path = select_units(voice.units, corpus, weights)
         jobs, refs = [], []
-        for unit, si in zip(voice.units, path, strict=True):
+        for ui, (unit, si) in enumerate(zip(voice.units, path, strict=True)):
             sid = corpus.source_id[si]
             sustained = not voice.lyrics or is_voiced_sustained(unit.phoneme)
             drum = drum_for(hz_to_midi(unit.target_f0_hz)) if sampled_drums else None
@@ -411,6 +418,15 @@ def render(args: argparse.Namespace) -> None:
                 measure_used_f0=voice.lyrics and sustained,
                 sustain_to_note=voice.lyrics and sustained and not args.no_lyrics_stretch,
             )
+            if voice.lyrics and sustained and core_store is not None:
+                job.core_plan = core_store.plan(int(si), unit.duration_sec)
+            if voice.lyrics and not sustained and args.lyrics_consonants == "aligned":
+                from .world_plans import plan_consonant
+
+                following = voice.units[ui + 1] if ui + 1 < len(voice.units) else None
+                joins = (following is not None and is_voiced_sustained(following.phoneme)
+                         and round((unit.start_sec + unit.duration_sec) * SR) == round(following.start_sec * SR))
+                job.consonant_plan = plan_consonant(job, unit.phoneme, joins_vowel=joins)
             jobs.append(job)
             refs.append(corpus.video_ref[si])
             entry = {
@@ -430,6 +446,10 @@ def render(args: argparse.Namespace) -> None:
                          for p, c in zip(corpus.cand_phoneme[si], corpus.cand_conf[si], strict=True) if p]
                 rank = next((r + 1 for r, (p, _) in enumerate(cands) if p == unit.phoneme), None)
                 entry.update({"phoneme": unit.phoneme, "matched_rank": rank, "segment_candidates": cands})
+                if job.core_plan is not None:
+                    entry["world_core"] = job.core_plan.to_dict()
+                if job.consonant_plan is not None:
+                    entry["world_consonant"] = asdict(job.consonant_plan)
             plan.append(entry)
         print(f"  synthesizing {voice.label} ({len(jobs)} {'phonemes' if voice.lyrics else 'notes'})",
               file=sys.stderr)

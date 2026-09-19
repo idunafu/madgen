@@ -61,6 +61,12 @@ def _add_render_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--no-lyrics-stretch", action="store_true",
                    help="lyrics mode: use the vowel material as it is (up to the note length, the rest silent) "
                         "instead of fitting its voiced core to exactly the note length")
+    p.add_argument("--lyrics-selection", choices=["core", "legacy"], default="core",
+                   help="lyrics: core (default) selects using actual WORLD core pitch/stretch; "
+                        "legacy uses whole-segment DB statistics")
+    p.add_argument("--lyrics-consonants", choices=["aligned", "legacy"], default="aligned",
+                   help="lyrics: align short consonants to vowels, retain clear plosive attacks and "
+                        "cap active-level boost at 6 dB with aligned (default); legacy keeps previous processing")
     p.add_argument("--vocal-boost", type=float, default=2.0, metavar="DB",
                    help="with both --ust and --melody: level the sung tracks this many dB above the "
                         "accompaniment, by measured loudness (default 2)")

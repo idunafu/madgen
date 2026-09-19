@@ -157,7 +157,9 @@ def test_old_db_is_migrated(tmp_path):
         db.load_corpus(db.connect(path), "phoneme")
 
 
-def test_lyrics_render_end_to_end(tmp_path):
+@pytest.mark.parametrize("selection,consonants", [(None, None), ("core", "legacy"),
+                                                 ("legacy", "aligned"), ("legacy", "legacy")])
+def test_lyrics_render_end_to_end(tmp_path, selection, consonants):
     """A phoneme corpus inserted by hand (the real analyzer needs the GPU models)."""
     sr = 44100
     t = np.arange(sr) / sr
@@ -179,13 +181,24 @@ def test_lyrics_render_end_to_end(tmp_path):
     ustx = tmp_path / "song.ustx"
     ustx.write_text(USTX, encoding="utf-8")
     out_dir = tmp_path / "out"
+    extra = [] if selection is None else ["--lyrics-selection", selection, "--lyrics-consonants", consonants]
+    if selection is None:
+        selection, consonants = "core", "aligned"  # omitted flags must execute both new paths
     render(build_parser().parse_args(
         ["render", "--db", str(db_path), "--ust", str(ustx), "--out-dir", str(out_dir), "--split-parts",
-         "--workers", "1"]))
+         "--workers", "1", *extra]))
     plan = json.loads((out_dir / "plan.json").read_text(encoding="utf-8"))
     assert [(e["phoneme"], e["matched_rank"]) for e in plan] == [("k", 1), ("a", 1), ("a", 1), ("N", None)]
     assert plan[0]["pitch_corrected"] is False            # consonant: never corrected
     assert plan[2]["pitch_corrected"] is True              # + melisma on B4 from an A4 segment
+    assert ("world_core" in plan[1]) == (selection == "core")
+    assert ("world_consonant" in plan[0]) == (consonants == "aligned")
+    if selection == "core":
+        assert plan[1]["used_f0_hz"] == round(plan[1]["world_core"]["reference_f0_hz"], 2)
+        assert plan[1]["stretch_ratio"] == round(plan[1]["world_core"]["stretch_ratio"], 2)
+    if consonants == "aligned":
+        p = plan[0]["world_consonant"]
+        assert (p["output_start"] + p["source_end"] - p["source_start"]) / sr == pytest.approx(.56, abs=1 / sr)
     y, _ = sf.read(out_dir / "mix.wav")
     assert np.max(np.abs(y[int(1.53 * sr): int(2.0 * sr)])) == 0.0   # the R rest stays silent
     assert (out_dir / "parts" / "ust00_Lead.wav").exists()

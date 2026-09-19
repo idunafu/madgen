@@ -46,6 +46,40 @@ SUSTAIN_LEVEL_RANGE_DB = 12.0
 FRAME_PERIOD = 5.0
 
 
+@dataclass(frozen=True)
+class CorePlan:
+    read_start: int
+    read_end: int
+    core_start: int  # WORLD frame indices in the padded analysis
+    core_end: int
+    f0: np.ndarray
+    times: np.ndarray
+    reference_f0: float
+    output_frames: int
+    output_samples: int
+    stretch_ratio: float
+    analysis_key: str
+
+    def to_dict(self):
+        return {"analysis_key": self.analysis_key, "read_start_sample": self.read_start,
+                "read_end_sample": self.read_end, "core_start_frame": self.core_start,
+                "core_end_frame": self.core_end,
+                "used_start_sec": self.read_start / SR + float(self.times[self.core_start]),
+                "used_end_sec": self.read_start / SR + float(self.times[self.core_end - 1]) + FRAME_PERIOD / 1000,
+                "reference_f0_hz": None if np.isnan(self.reference_f0) else self.reference_f0,
+                "output_frames": self.output_frames, "output_samples": self.output_samples,
+                "stretch_ratio": self.stretch_ratio}
+
+
+@dataclass(frozen=True)
+class ConsonantPlan:
+    source_start: int
+    source_end: int
+    output_start: int
+    gain: float
+    burst_trimmed: bool
+
+
 @dataclass
 class NoteJob:
     audio_path: str
@@ -64,6 +98,8 @@ class NoteJob:
     measure_used_f0: bool = False
     # Lyrics mode: fit the segment's voiced core to exactly the note length (see module docstring).
     sustain_to_note: bool = False
+    core_plan: CorePlan | None = None
+    consonant_plan: ConsonantPlan | None = None
 
 
 def needs_correction(seg_f0: float, target_f0: float, threshold_cents: float | None) -> bool:
@@ -130,13 +166,13 @@ def _fill_unvoiced(f0: np.ndarray) -> np.ndarray:
     return np.interp(np.arange(len(f0)), voiced, f0[voiced])
 
 
-def _render_sustained(job: NoteJob, x: np.ndarray, offset: int) -> tuple[np.ndarray, float, bool, float]:
-    """-> (audio of exactly note_dur + XFADE_SEC, reference f0, corrected, stretch ratio)"""
+def analyze_core(x: np.ndarray, offset: int, segment_sec: float):
+    """Shared WORLD analysis and legacy core detector; no spectral resynthesis here."""
     f0, t = pyworld.dio(x, SR, frame_period=FRAME_PERIOD, f0_floor=60.0, f0_ceil=1100.0)
     f0 = pyworld.stonemask(x, f0, t, SR)
     fps = 1000.0 / FRAME_PERIOD
     seg_a = int(offset * fps) // SR
-    seg_b = min(len(f0), int((offset + (job.seg_end - job.seg_start) * SR) * fps) // SR)
+    seg_b = min(len(f0), int((offset + segment_sec * SR) * fps) // SR)
     if seg_b - seg_a < CORE_MIN_FRAMES:
         seg_a, seg_b = 0, len(f0)
     loud = _frame_rms_db(x, len(f0))
@@ -147,10 +183,22 @@ def _render_sustained(job: NoteJob, x: np.ndarray, offset: int) -> tuple[np.ndar
         a, b = _longest_run(is_loud, CORE_MAX_GAP_FRAMES)
     if b - a < CORE_MIN_FRAMES:
         a, b = 0, seg_b - seg_a
-    core = slice(seg_a + a, seg_a + b)
+    return f0, t, seg_a + a, seg_a + b
+
+
+def _render_sustained(job: NoteJob, x: np.ndarray, offset: int) -> tuple[np.ndarray, float, bool, float]:
+    """Execute a selected core, or retain legacy analysis for comparison."""
+    if job.core_plan is None:
+        f0, t, a, b = analyze_core(x, offset, job.seg_end - job.seg_start)
+    else:
+        p = job.core_plan
+        f0, t, a, b = p.f0, p.times, p.core_start, p.core_end
+    core = slice(a, b)
 
     voiced_core = f0[core][f0[core] > 0]
     ref_f0 = float(np.median(voiced_core)) if voiced_core.size >= 3 else float("nan")
+    if job.core_plan is not None:
+        ref_f0 = job.core_plan.reference_f0
     corrected = needs_correction(ref_f0, job.target_f0, job.threshold_cents)
 
     sp = pyworld.cheaptrick(x, f0, t, SR)[core]
@@ -168,7 +216,10 @@ def _render_sustained(job: NoteJob, x: np.ndarray, offset: int) -> tuple[np.ndar
         corrected = True
 
     out_len = job.note_dur + XFADE_SEC
+    fps = 1000.0 / FRAME_PERIOD
     n_out = max(1, int(np.ceil(out_len * fps)) + 1)
+    if job.core_plan is not None:
+        n_out = job.core_plan.output_frames
     n_core = len(core_f0)
     if n_core >= n_out:
         f0_o, sp_o, ap_o = core_f0[:n_out], sp[:n_out], ap[:n_out]
@@ -179,12 +230,32 @@ def _render_sustained(job: NoteJob, x: np.ndarray, offset: int) -> tuple[np.ndar
         ap_o = _stretch_frames(ap, n_out, edge)
     y = pyworld.synthesize(np.ascontiguousarray(f0_o), np.ascontiguousarray(sp_o), np.ascontiguousarray(ap_o),
                            SR, frame_period=FRAME_PERIOD)
-    return y[: int(out_len * SR)], ref_f0, corrected, max(1.0, n_out / n_core)
+    length = int(out_len * SR) if job.core_plan is None else job.core_plan.output_samples
+    return y[:length], ref_f0, corrected, max(1.0, n_out / n_core)
 
 
 def render_note(job: NoteJob) -> tuple[int, np.ndarray, float, bool, float]:
     """Return (start sample on the output timeline, audio, reference f0 used, pitch corrected,
     stretch ratio)."""
+    if job.consonant_plan is not None:
+        p = job.consonant_plan
+        y, _ = sf.read(job.audio_path, start=p.source_start, stop=p.source_end, dtype="float64")
+        y *= p.gain
+        # Protect a plosive attack and avoid a 20 ms fade consuming a short consonant.
+        for leading, sec in [(True, .001), (False, .002)]:
+            n = min(round(sec * SR), len(y) // 2)
+            if n:
+                ramp = np.linspace(0, 1, n)
+                if leading:
+                    y[:n] *= ramp
+                else:
+                    y[-n:] *= ramp[::-1]
+        return p.output_start, y.astype(np.float32), job.seg_f0, False, 1.0
+    if job.core_plan is not None:
+        p = job.core_plan
+        x, _ = sf.read(job.audio_path, start=p.read_start, stop=p.read_end, dtype="float64")
+        y, ref_f0, corrected, ratio = _render_sustained(job, x, 0)
+        return _finish(job, y, ref_f0, corrected, ratio)
     info = sf.info(job.audio_path)
     seg_len = job.seg_end - job.seg_start
     # Take at most the note length plus the crossfade tail, and never beyond the segment,
