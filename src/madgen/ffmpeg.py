@@ -13,10 +13,10 @@ def ffmpeg_exe() -> str:
     return imageio_ffmpeg.get_ffmpeg_exe()
 
 
-def run(args: list[str]) -> None:
-    """Run ffmpeg with the given arguments, raising on failure."""
+def run(args: list[str], *, loglevel: str = "error") -> str:
+    """Run ffmpeg, returning its diagnostics and raising on failure."""
     proc = subprocess.run(
-        [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y", *args],
+        [ffmpeg_exe(), "-hide_banner", "-loglevel", loglevel, "-nostats", "-nostdin", "-y", *args],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -25,6 +25,31 @@ def run(args: list[str]) -> None:
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg failed (exit {proc.returncode}): {' '.join(args)}\n"
                            f"{proc.stderr.strip() or '(no stderr; killed by a signal?)'}")
+    return proc.stderr
+
+
+def _input_info(text: str) -> dict:
+    """Read only the input report, excluding output streams and their metadata."""
+    duration = 0.0
+    has_video = False
+    in_input = False
+    for line in text.splitlines():
+        if line.startswith("Input #"):
+            in_input = True
+            continue
+        if line.startswith(("Stream mapping:", "Output #")):
+            break
+        if not in_input:
+            continue
+        line = line.strip()
+        if line.startswith("Duration:"):
+            hms = line.split("Duration:")[1].split(",")[0].strip()
+            if hms != "N/A":
+                h, m, s = hms.split(":")
+                duration = int(h) * 3600 + int(m) * 60 + float(s)
+        if line.startswith("Stream #") and "Video:" in line:
+            has_video = True
+    return {"duration": duration, "has_video": has_video}
 
 
 def probe(path: Path) -> dict:
@@ -40,18 +65,7 @@ def probe(path: Path) -> dict:
         encoding="utf-8",
         errors="replace",
     )
-    text = proc.stderr
-    duration = 0.0
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("Duration:"):
-            hms = line.split("Duration:")[1].split(",")[0].strip()
-            h, m, s = hms.split(":")
-            duration = int(h) * 3600 + int(m) * 60 + float(s)
-    has_video = any(
-        "Video:" in line and "Stream #" in line for line in text.splitlines()
-    )
-    return {"duration": duration, "has_video": has_video}
+    return _input_info(proc.stderr)
 
 
 def extract_audio(src: Path, dst: Path, sample_rate: int) -> None:
@@ -59,8 +73,8 @@ def extract_audio(src: Path, dst: Path, sample_rate: int) -> None:
     extract_audio_multi(src, [(dst, sample_rate)])
 
 
-def extract_audio_multi(src: Path, outputs: list[tuple[Path, int]]) -> None:
-    """Decode once to mono PCM wavs at the requested sample rates."""
+def extract_audio_multi(src: Path, outputs: list[tuple[Path, int]]) -> dict:
+    """Decode once to mono PCM wavs and return the input's duration/video information."""
     args = ["-i", str(src)]
     for dst, sample_rate in outputs:
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -72,7 +86,7 @@ def extract_audio_multi(src: Path, outputs: list[tuple[Path, int]]) -> None:
             "-c:a", "pcm_s16le",
             str(dst),
         ])
-    run(args)
+    return _input_info(run(args, loglevel="info"))
 
 
 def extract_clip(src: Path, start: float, frames: int, dst: Path, width: int, height: int, fps: float,

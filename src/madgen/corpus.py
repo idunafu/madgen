@@ -284,8 +284,7 @@ def _prepare_source(job: _SourceJob, params: SegmentParams, workers: int = 1,
         ffmpeg.extract_audio(job.path, job.wav16, ANALYSIS_SR)
         return job.has_video, None, 0.0
 
-    info = ffmpeg.probe(job.path)
-    ffmpeg.extract_audio_multi(job.path, [(job.wav44, SYNTH_SR), (job.wav16, ANALYSIS_SR)])
+    info = ffmpeg.extract_audio_multi(job.path, [(job.wav44, SYNTH_SR), (job.wav16, ANALYSIS_SR)])
     f0, rms_db = analyze_frames(job.wav16, workers, report_progress=report_progress)
     segs = segment_frames(f0, rms_db, params)
     frame_sec = FRAME_PERIOD_MS / 1000

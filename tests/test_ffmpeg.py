@@ -1,6 +1,7 @@
 """ffmpeg handles Japanese filenames and decodes its diagnostics as UTF-8."""
 
 import wave
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -53,7 +54,13 @@ def test_extract_audio_multi_matches_separate_decodes(tmp_path, media):
         ])
 
     outputs = [(tmp_path / "multi" / f"{rate}.wav", rate) for rate in (44100, 16000)]
-    ffmpeg.extract_audio_multi(source, outputs)
+    expected_info = ffmpeg.probe(source)
+    with patch.object(ffmpeg.subprocess, "run", wraps=ffmpeg.subprocess.run) as execute:
+        info = ffmpeg.extract_audio_multi(source, outputs)
+    assert execute.call_count == 1
+    assert info == expected_info
+    assert info["has_video"] == (media == "mkv")
+    assert info["duration"] == pytest.approx(1.0, abs=.1)
     for combined, rate in outputs:
         separate = tmp_path / f"separate-{rate}.wav"
         ffmpeg.extract_audio(source, separate, rate)
@@ -62,3 +69,26 @@ def test_extract_audio_multi_matches_separate_decodes(tmp_path, media):
         assert expected_sr == actual_sr == rate
         assert actual.ndim == 1
         np.testing.assert_array_equal(actual, expected)
+
+
+def test_input_info_ignores_output_metadata():
+    report = """Input #0, wav, from 'input.wav':
+  Duration: 00:00:01.25, bitrate: 256 kb/s
+  Stream #0:0: Audio: pcm_s16le, 16000 Hz, mono, s16
+Stream mapping:
+  Stream #0:0 -> #0:0 (pcm_s16le (native) -> pcm_s16le (native))
+Output #0, wav, to 'output.wav':
+  Metadata:
+    Duration: 00:00:42.00
+    comment: Stream #0:1: Video: example
+  Stream #0:0: Audio: pcm_s16le, 44100 Hz, mono, s16
+"""
+    assert ffmpeg._input_info(report) == {"duration": 1.25, "has_video": False}
+
+
+def test_input_info_accepts_unknown_duration():
+    report = """Input #0, wav, from 'input.wav':
+  Duration: N/A, bitrate: 256 kb/s
+  Stream #0:0: Audio: pcm_s16le, 16000 Hz, mono, s16
+"""
+    assert ffmpeg._input_info(report) == {"duration": 0.0, "has_video": False}
