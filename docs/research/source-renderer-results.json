@@ -1,0 +1,146 @@
+{
+  "date": "2026-09-20",
+  "parselmouth": "0.4.7",
+  "praat": "6.1.38",
+  "comparison": "source vs legacy WORLD end-to-end paths; no listening evaluation",
+  "cases": [
+    {
+      "corpus": "main",
+      "segment_id": 4278,
+      "raw_exact": true,
+      "joined_raw_exact": true,
+      "source_frames": 24924,
+      "expected_frames": 24924,
+      "source_finite": true,
+      "target_hz": 413.8689578752767,
+      "source_pitch": {
+        "voiced_fraction": 0.9824561403508771,
+        "median_abs_cents": 0.9953218835067692
+      },
+      "world_pitch": {
+        "voiced_fraction": 1.0,
+        "median_abs_cents": 0.5304863003264031
+      },
+      "source_render_seconds": 0.007286000007297844,
+      "world_render_seconds": 0.06185729999560863,
+      "world_frames": 25806,
+      "world_used_f0": 339.2089641648273,
+      "world_stretch_ratio": 2.975
+    },
+    {
+      "corpus": "main",
+      "segment_id": 2939,
+      "raw_exact": true,
+      "joined_raw_exact": true,
+      "source_frames": 28314,
+      "expected_frames": 28314,
+      "source_finite": true,
+      "target_hz": 278.6442099056094,
+      "source_pitch": {
+        "voiced_fraction": 0.8372093023255814,
+        "median_abs_cents": 1.0602825304292143
+      },
+      "world_pitch": {
+        "voiced_fraction": 1.0,
+        "median_abs_cents": 0.44476010683144596
+      },
+      "source_render_seconds": 0.009260499966330826,
+      "world_render_seconds": 0.05455399997299537,
+      "world_frames": 29196,
+      "world_used_f0": 227.99311220560193,
+      "world_stretch_ratio": 5.583333333333333
+    },
+    {
+      "corpus": "main",
+      "segment_id": 976,
+      "raw_exact": true,
+      "joined_raw_exact": true,
+      "source_frames": 21422,
+      "expected_frames": 21422,
+      "source_finite": true,
+      "target_hz": 308.0996237505401,
+      "source_pitch": {
+        "voiced_fraction": 0.9795918367346939,
+        "median_abs_cents": 0.819925593314431
+      },
+      "world_pitch": {
+        "voiced_fraction": 1.0,
+        "median_abs_cents": 0.5695987903620379
+      },
+      "source_render_seconds": 0.005543899955227971,
+      "world_render_seconds": 0.043851700029335916,
+      "world_frames": 22304,
+      "world_used_f0": 270.6696405167731,
+      "world_stretch_ratio": 4.478260869565218
+    },
+    {
+      "corpus": "sample",
+      "segment_id": 48174,
+      "raw_exact": true,
+      "joined_raw_exact": true,
+      "source_frames": 14136,
+      "expected_frames": 14136,
+      "source_finite": true,
+      "target_hz": 341.33543894027434,
+      "source_pitch": {
+        "voiced_fraction": 1.0,
+        "median_abs_cents": 1.7880230653100482
+      },
+      "world_pitch": {
+        "voiced_fraction": 1.0,
+        "median_abs_cents": 0.7315569858398299
+      },
+      "source_render_seconds": 0.005718700005672872,
+      "world_render_seconds": 0.03905100002884865,
+      "world_frames": 15018,
+      "world_used_f0": 286.8135783882079,
+      "world_stretch_ratio": 2.121212121212121
+    },
+    {
+      "corpus": "sample",
+      "segment_id": 26622,
+      "raw_exact": true,
+      "joined_raw_exact": null,
+      "source_frames": 14180,
+      "expected_frames": 14180,
+      "source_finite": true,
+      "target_hz": 659.5692144109612,
+      "source_pitch": {
+        "voiced_fraction": 0.4153846153846154,
+        "median_abs_cents": 132.6376763240063
+      },
+      "world_pitch": {
+        "voiced_fraction": 0.9565217391304348,
+        "median_abs_cents": 3.093534028306986
+      },
+      "source_render_seconds": 0.003557200019713491,
+      "world_render_seconds": 0.02891809999709949,
+      "world_frames": 15062,
+      "world_used_f0": null,
+      "world_stretch_ratio": 10.0
+    },
+    {
+      "corpus": "sample",
+      "segment_id": 25811,
+      "raw_exact": true,
+      "joined_raw_exact": true,
+      "source_frames": 24734,
+      "expected_frames": 24734,
+      "source_finite": true,
+      "target_hz": 599.9665113098631,
+      "source_pitch": {
+        "voiced_fraction": 0.9734513274336283,
+        "median_abs_cents": 1.4786820673035523
+      },
+      "world_pitch": {
+        "voiced_fraction": 1.0,
+        "median_abs_cents": 1.3989400556764824
+      },
+      "source_render_seconds": 0.015157299989368767,
+      "world_render_seconds": 0.06828110001515597,
+      "world_frames": 25616,
+      "world_used_f0": 502.74119306254687,
+      "world_stretch_ratio": 3.6875
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "input": "work\\iwashi_lyrics_sample\\praat_sustain",
+  "same_material_and_timing": true,
+  "common_master_gain": 1.2392968850529766,
+  "reconstruction_error": 0.35012584924697876,
+  "protected_copy_error": 3.058090806007385e-05,
+  "cached_resynthesis_for_all_variants": true,
+  "eligible_units": 46,
+  "variants": {
+    "6": {
+      "mix": {
+        "samples": 7541707,
+        "peak": 0.8912585973739624
+      },
+      "vocals": {
+        "samples": 7541707,
+        "peak": 0.45331621170043945
+      },
+      "high_band_change_db_p10_p50_p90": [
+        -5.999836371828148,
+        -5.956605365642228,
+        -5.523065493268032
+      ]
+    },
+    "9": {
+      "mix": {
+        "samples": 7541707,
+        "peak": 0.8912585973739624
+      },
+      "vocals": {
+        "samples": 7541707,
+        "peak": 0.45331621170043945
+      },
+      "high_band_change_db_p10_p50_p90": [
+        -8.999753352472009,
+        -8.931334697541077,
+        -8.261281530246183
+      ]
+    }
+  }
+}

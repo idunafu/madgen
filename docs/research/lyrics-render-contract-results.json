@@ -1,0 +1,33 @@
+{
+  "baseline_commit": "90994f2117c9bbc7f6d0c2faa6aac73a2fa1c0fd",
+  "date": "2026-09-19",
+  "scope": "Synthetic CPU probes, not a speech quality benchmark",
+  "versions": {
+    "numpy": "2.5.3",
+    "pyworld": "0.3.5",
+    "soundfile": "0.14.0"
+  },
+  "selection_vs_render": {
+    "source_interval_sec": 0.8,
+    "target_duration_sec": 0.4,
+    "selection_f0_hz": 179.91660076628483,
+    "selection_pitch_plus_length_cost": 0,
+    "render_used_f0_hz": 329.8897716261306,
+    "pitch_corrected": true,
+    "render_pitch_shift_cents": -1049.5868857507078,
+    "reported_stretch_ratio": 1.7551020408163265,
+    "output_samples_including_tail": 18522
+  },
+  "pitch_disabled_sustain": {
+    "pitch_corrected": false,
+    "world_synthesize_calls": 1
+  },
+  "pitch_disabled_non_sustain": {
+    "pitch_corrected": false,
+    "world_synthesize_calls": 0,
+    "sample_equal_to_source": false,
+    "max_absolute_difference": 0.21199102699756622,
+    "source_rms": 0.14577379822731018,
+    "output_rms": 0.12235734611749649
+  }
+}
