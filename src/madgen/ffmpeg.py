@@ -56,17 +56,23 @@ def probe(path: Path) -> dict:
 
 def extract_audio(src: Path, dst: Path, sample_rate: int) -> None:
     """Decode the audio track of `src` to a mono PCM wav at `sample_rate`."""
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    run(
-        [
-            "-i", str(src),
+    extract_audio_multi(src, [(dst, sample_rate)])
+
+
+def extract_audio_multi(src: Path, outputs: list[tuple[Path, int]]) -> None:
+    """Decode once to mono PCM wavs at the requested sample rates."""
+    args = ["-i", str(src)]
+    for dst, sample_rate in outputs:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        # Repeat output options so each file keeps the same stream selection and format.
+        args.extend([
             "-vn",
             "-ac", "1",
             "-ar", str(sample_rate),
             "-c:a", "pcm_s16le",
             str(dst),
-        ]
-    )
+        ])
+    run(args)
 
 
 def extract_clip(src: Path, start: float, frames: int, dst: Path, width: int, height: int, fps: float,

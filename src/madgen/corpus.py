@@ -13,7 +13,7 @@ import json
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
-from contextlib import closing
+from contextlib import closing, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -90,8 +90,11 @@ def analyze_frames(wav16: Path, workers: int) -> tuple[np.ndarray, np.ndarray]:
     jobs = [(str(wav16), s, min(chunk, total - s)) for s in range(0, total, chunk)]
     f0s, rmss = [], []
     progress.stage("pitch analysis (chunks)", len(jobs))
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        for i, (f0, rms) in enumerate(pool.map(_analyze_chunk, jobs)):
+    # A single chunk has no parallel work; spawning a process per short file is costly.
+    serial = len(jobs) <= 1 or workers == 1
+    with nullcontext() if serial else ProcessPoolExecutor(max_workers=workers) as pool:
+        results = map(_analyze_chunk, jobs) if serial else pool.map(_analyze_chunk, jobs)
+        for i, (f0, rms) in enumerate(results):
             # Each chunk yields frames at 0, hop, ...; keep exactly the frames that belong to it.
             keep = -(-jobs[i][2] // hop)
             f0s.append(f0[:keep])
@@ -296,8 +299,7 @@ def _build_sources(conn, sources: list[Path], cache_dir: Path, workers: int, par
         wav16 = cache_dir / f"{digest}.16k.wav"
         print(f"  decoding audio ({info['duration']:.0f} s)", file=sys.stderr)
         progress.stage(f"decoding audio ({info['duration']:.0f} s)")
-        ffmpeg.extract_audio(path, wav44, SYNTH_SR)
-        ffmpeg.extract_audio(path, wav16, ANALYSIS_SR)
+        ffmpeg.extract_audio_multi(path, [(wav44, SYNTH_SR), (wav16, ANALYSIS_SR)])
 
         f0, rms_db = analyze_frames(wav16, workers)
         segs = segment_frames(f0, rms_db, params)
