@@ -170,7 +170,7 @@ uv run --extra lyrics --extra cpu madgen build-corpus --source sources/ --db wor
 | `--db FILE` | — | 素材 DB（SQLite）。解析済みの音声は `DB名.cache/` に置かれる |
 | `--phonemes wav2vec2` | `none` | 歌詞モード用の音素解析も行う（lyrics extra が必要） |
 | `--device` | `auto` | 音素解析を動かす場所。`auto`（GPU があれば GPU）/ `cuda` / `cpu` |
-| `--workers N` | CPU コア数 − 2 | 音高解析の並列数 |
+| `--workers N` | CPU コア数 − 2 | 素材のデコード・音高解析の並列数。素材が1件の場合は音高解析のチャンク並列数 |
 | `--log FILE` | `DB名.log` | 進捗ログ |
 
 同じ内容のファイル（ハッシュで判定）は二度解析しません。同じパスで内容が変わったファイルは、古い解析結果を消して解析し直します。

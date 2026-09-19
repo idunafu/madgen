@@ -17,7 +17,7 @@ def pipeline(tmp_path, monkeypatch):
     sources = [tmp_path / f"{i}.wav" for i in range(3)]
     for i, path in enumerate(sources):
         sf.write(path, np.full(1600, (i + 1) / 10, dtype=np.float32), 16000)
-    monkeypatch.setattr(corpus, "analyze_frames", lambda *args: (np.zeros(20), np.full(20, -80.)))
+    monkeypatch.setattr(corpus, "analyze_frames", lambda *args, **kwargs: (np.zeros(20), np.full(20, -80.)))
     state = {"asr_loads": 0, "asr_unloads": 0, "phoneme_loads": 0, "transcriptions": [], "alignments": [],
              "fail_transcription": None, "fail_alignment": None, "empty": False}
 

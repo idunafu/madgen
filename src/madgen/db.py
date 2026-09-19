@@ -55,6 +55,7 @@ def connect(path: Path) -> sqlite3.Connection:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
     conn.executescript(SCHEMA)
     conn.execute("CREATE INDEX IF NOT EXISTS segments_kind ON segments (kind, source_id, start_sec)")
+    conn.execute("CREATE INDEX IF NOT EXISTS sources_path ON sources (path)")
     return conn
 
 

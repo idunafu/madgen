@@ -12,8 +12,9 @@ import hashlib
 import json
 import os
 import sys
+from collections import deque
 from concurrent.futures import ProcessPoolExecutor
-from contextlib import closing, nullcontext
+from contextlib import ExitStack, closing, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -82,14 +83,15 @@ def _analyze_chunk(args: tuple[str, int, int]) -> tuple[np.ndarray, np.ndarray]:
     return _frame_features(x)
 
 
-def analyze_frames(wav16: Path, workers: int) -> tuple[np.ndarray, np.ndarray]:
+def analyze_frames(wav16: Path, workers: int, *, report_progress: bool = True) -> tuple[np.ndarray, np.ndarray]:
     """Frame features for a whole (possibly hours long) file, chunked across processes."""
     total = sf.info(str(wav16)).frames
     chunk = int(CHUNK_SEC * ANALYSIS_SR)
     hop = int(ANALYSIS_SR * FRAME_PERIOD_MS / 1000)
     jobs = [(str(wav16), s, min(chunk, total - s)) for s in range(0, total, chunk)]
     f0s, rmss = [], []
-    progress.stage("pitch analysis (chunks)", len(jobs))
+    if report_progress:
+        progress.stage("pitch analysis (chunks)", len(jobs))
     # A single chunk has no parallel work; spawning a process per short file is costly.
     serial = len(jobs) <= 1 or workers == 1
     with nullcontext() if serial else ProcessPoolExecutor(max_workers=workers) as pool:
@@ -99,10 +101,12 @@ def analyze_frames(wav16: Path, workers: int) -> tuple[np.ndarray, np.ndarray]:
             keep = -(-jobs[i][2] // hop)
             f0s.append(f0[:keep])
             rmss.append(rms[:keep])
-            progress.update(i + 1)
-            print(f"\r  analyzed {min((i + 1) * CHUNK_SEC, total / ANALYSIS_SR):.0f}"
-                  f"/{total / ANALYSIS_SR:.0f} s", end="", file=sys.stderr, flush=True)
-    print(file=sys.stderr)
+            if report_progress:
+                progress.update(i + 1)
+                print(f"\r  analyzed {min((i + 1) * CHUNK_SEC, total / ANALYSIS_SR):.0f}"
+                      f"/{total / ANALYSIS_SR:.0f} s", end="", file=sys.stderr, flush=True)
+    if report_progress:
+        print(file=sys.stderr)
     return np.concatenate(f0s), np.concatenate(rmss)
 
 
@@ -263,56 +267,51 @@ def build_corpus(sources: list[Path], db_path: Path, workers: int | None = None,
         _build_sources(conn, sources, cache_dir, workers, params, phonemes, device, whisper_model)
 
 
-def _build_sources(conn, sources: list[Path], cache_dir: Path, workers: int, params: SegmentParams,
-                   phonemes: str, device: str, whisper_model: str) -> None:
-    pending: dict[str, _PhonemeJob] = {}
-    for path in iter_media(sources):
-        print(f"[build-corpus] {path}", file=sys.stderr)
-        progress.log(f"source {path}")
-        progress.stage("hashing source")
-        digest = file_hash(path)
-        if digest in pending:
-            continue
-        row = conn.execute("SELECT has_video, phonemes_analyzer FROM sources WHERE source_id = ?",
-                           (digest,)).fetchone()
-        if row:
-            has_video, analyzed = row
-            if phonemes == "none" or analyzed == phonemes:
-                print("  unchanged, skipping (cached)", file=sys.stderr)
-                continue
-            # Pitch analysis is cached; only the phoneme analysis is missing.
-            print("  pitch analysis cached; adding phoneme analysis", file=sys.stderr)
-            wav16 = cache_dir / f"{digest}.16k.wav"
-            progress.stage("decoding audio (16 kHz)")
-            ffmpeg.extract_audio(path, wav16, ANALYSIS_SR)
-            pending[digest] = _PhonemeJob(digest, path, wav16, str(path.resolve()) if has_video else None)
-            continue
-        # The same path with different content: drop the stale analysis.
+@dataclass
+class _SourceJob:
+    digest: str
+    path: Path
+    wav44: Path
+    wav16: Path
+    # None means pitch analysis is needed; a bool comes from an existing DB row.
+    has_video: bool | None = None
+
+
+def _prepare_source(job: _SourceJob, params: SegmentParams, workers: int = 1,
+                    *, report_progress: bool = False) -> tuple[bool, list[tuple] | None, float]:
+    """Decode and analyze without touching the DB or loading any phoneme models."""
+    if job.has_video is not None:
+        ffmpeg.extract_audio(job.path, job.wav16, ANALYSIS_SR)
+        return job.has_video, None, 0.0
+
+    info = ffmpeg.probe(job.path)
+    ffmpeg.extract_audio_multi(job.path, [(job.wav44, SYNTH_SR), (job.wav16, ANALYSIS_SR)])
+    f0, rms_db = analyze_frames(job.wav16, workers, report_progress=report_progress)
+    segs = segment_frames(f0, rms_db, params)
+    frame_sec = FRAME_PERIOD_MS / 1000
+    video_ref = str(job.path.resolve()) if info["has_video"] else None
+    records = []
+    for s, e in segs:
+        voiced = f0[s:e][f0[s:e] > 0]
+        cents = 1200 * np.log2(voiced / np.median(voiced))
+        records.append((
+            job.digest, s * frame_sec, e * frame_sec, "", float(np.median(voiced)), video_ref,
+            float(np.std(cents)), float(np.mean(rms_db[s:e])),
+        ))
+    return info["has_video"], records, sum(e - s for s, e in segs) * frame_sec
+
+
+def _save_source(conn, job: _SourceJob, result: tuple[bool, list[tuple] | None, float],
+                 pending: dict[str, _PhonemeJob], phonemes: str) -> None:
+    has_video, records, usable_sec = result
+    digest, path = job.digest, job.path
+    if records is not None:
+        # Apply replacements only when this source's turn to commit arrives.
         for (old,) in conn.execute("SELECT source_id FROM sources WHERE path = ?", (str(path.resolve()),)).fetchall():
             conn.execute("DELETE FROM phoneme_candidates WHERE segment_id IN "
                          "(SELECT id FROM segments WHERE source_id = ?)", (old,))
             conn.execute("DELETE FROM segments WHERE source_id = ?", (old,))
             conn.execute("DELETE FROM sources WHERE source_id = ?", (old,))
-
-        info = ffmpeg.probe(path)
-        wav44 = cache_dir / f"{digest}.wav"
-        wav16 = cache_dir / f"{digest}.16k.wav"
-        print(f"  decoding audio ({info['duration']:.0f} s)", file=sys.stderr)
-        progress.stage(f"decoding audio ({info['duration']:.0f} s)")
-        ffmpeg.extract_audio_multi(path, [(wav44, SYNTH_SR), (wav16, ANALYSIS_SR)])
-
-        f0, rms_db = analyze_frames(wav16, workers)
-        segs = segment_frames(f0, rms_db, params)
-        frame_sec = FRAME_PERIOD_MS / 1000
-        video_ref = str(path.resolve()) if info["has_video"] else None
-        records = []
-        for s, e in segs:
-            voiced = f0[s:e][f0[s:e] > 0]
-            cents = 1200 * np.log2(voiced / np.median(voiced))
-            records.append((
-                digest, s * frame_sec, e * frame_sec, "", float(np.median(voiced)), video_ref,
-                float(np.std(cents)), float(np.mean(rms_db[s:e])),
-            ))
         conn.executemany(
             "INSERT INTO segments (source_id, start_sec, end_sec, phoneme, f0_hz, video_ref, f0_std_cents, rms_db) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -320,14 +319,76 @@ def _build_sources(conn, sources: list[Path], cache_dir: Path, workers: int, par
         )
         conn.execute(
             "INSERT INTO sources (source_id, file_hash, path, audio_cache, has_video) VALUES (?, ?, ?, ?, ?)",
-            (digest, digest, str(path.resolve()), str(wav44.resolve()), int(info["has_video"])),
+            (digest, digest, str(path.resolve()), str(job.wav44.resolve()), int(has_video)),
         )
         conn.commit()
-        usable_sec = sum(e - s for s, e in segs) * frame_sec
         print(f"  {len(records)} segments, {usable_sec:.0f} s of usable voiced sound", file=sys.stderr)
         progress.log(f"{path}: {len(records)} pitch segments")
-        if phonemes != "none":
-            pending[digest] = _PhonemeJob(digest, path, wav16, video_ref)
-        else:
-            wav16.unlink()
+    if phonemes != "none":
+        pending[digest] = _PhonemeJob(digest, path, job.wav16, str(path.resolve()) if has_video else None)
+    else:
+        job.wav16.unlink()
+
+
+def _build_sources(conn, sources: list[Path], cache_dir: Path, workers: int, params: SegmentParams,
+                   phonemes: str, device: str, whisper_model: str) -> None:
+    files = iter_media(sources)
+    parallel = workers > 1 and len(files) > 1
+    limit = min(workers, len(files))
+    pending: dict[str, _PhonemeJob] = {}
+    scheduled: set[str] = set()
+    replaced: set[str] = set()
+    queue = deque()
+
+    def save_next() -> None:
+        job, future = queue.popleft()
+        progress.stage(f"waiting for source: {job.path}")
+        result = (_prepare_source(job, params, workers, report_progress=True)
+                  if future is None else future.result())
+        _save_source(conn, job, result, pending, phonemes)
+
+    # Bound the queue so large corpora do not retain every decoded file/result in advance.
+    # Shut down CPU workers before the two GPU/model passes begin.
+    with ExitStack() as stack:
+        pool = None
+        for path in files:
+            print(f"[build-corpus] {path}", file=sys.stderr)
+            progress.log(f"source {path}")
+            progress.stage("hashing source")
+            digest = file_hash(path)
+            if digest in scheduled:
+                continue
+            # Earlier queued replacements have not committed yet. Treat their old content
+            # as absent now, just as a serial build would, even if it appears at another path.
+            row = None if digest in replaced else conn.execute(
+                "SELECT has_video, phonemes_analyzer FROM sources WHERE source_id = ?", (digest,)).fetchone()
+            if row and (phonemes == "none" or row[1] == phonemes):
+                print("  unchanged, skipping (cached)", file=sys.stderr)
+                continue
+            job = _SourceJob(digest, path, cache_dir / f"{digest}.wav", cache_dir / f"{digest}.16k.wav",
+                             bool(row[0]) if row else None)
+            if row is None:
+                replaced.update(old for (old,) in conn.execute(
+                    "SELECT source_id FROM sources WHERE path = ?", (str(path.resolve()),)))
+            scheduled.add(digest)
+            if parallel:
+                if pool is None:
+                    if not queue:
+                        # Cache hits/duplicates may leave only one real job. Avoid starting
+                        # file workers until a second job exists; keep chunk parallelism then.
+                        queue.append((job, None))
+                        continue
+                    pool = ProcessPoolExecutor(max_workers=limit)
+                    stack.callback(pool.shutdown, wait=True, cancel_futures=True)
+                    first, _ = queue.popleft()
+                    queue.append((first, pool.submit(_prepare_source, first, params)))
+                # Each worker keeps the same chunk boundaries but does not spawn a nested pool.
+                queue.append((job, pool.submit(_prepare_source, job, params)))
+                if len(queue) >= limit:
+                    save_next()
+            else:
+                progress.stage(f"decoding and analyzing source: {path}")
+                _save_source(conn, job, _prepare_source(job, params, workers, report_progress=True), pending, phonemes)
+        while queue:
+            save_next()
     _analyze_phonemes(conn, list(pending.values()), device, whisper_model)
