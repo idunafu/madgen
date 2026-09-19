@@ -30,7 +30,7 @@ def pipeline(tmp_path, monkeypatch):
         state["asr_ref"] = weakref.ref(obj)
         return obj
 
-    def transcribe(audio, model):
+    def transcribe(audio, model, *, label):
         label = str(round(float(audio[0]), 1))
         if label == state["fail_transcription"]:
             raise KeyboardInterrupt
@@ -75,12 +75,16 @@ def build(sources, path, model="large-v3"):
     corpus.build_corpus(sources, path, workers=1, phonemes="wav2vec2", device="cpu", whisper_model=model)
 
 
-def test_two_passes_release_models_and_skip_completed(pipeline):
+def test_two_passes_release_models_and_skip_completed(pipeline, capsys):
     sources, path, state = pipeline
     build([*sources, sources[0]], path)
     assert state["asr_loads"] == state["phoneme_loads"] == 1
     assert state["transcriptions"] == state["alignments"] == ["0.1", "0.2", "0.3"]
     assert state["asr_ref"]() is None and state["phoneme_ref"]() is None
+    terminal = capsys.readouterr().err
+    assert "transcription complete 1/3 (33.3%)" in terminal
+    assert "transcription complete 3/3 (100.0%)" in terminal
+    assert "phoneme complete 3/3 (100.0%)" in terminal
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT count(*) FROM sources WHERE phonemes_analyzer='wav2vec2'").fetchone()[0] == 3
         assert conn.execute("SELECT count(*) FROM phoneme_candidates").fetchone()[0] == 9

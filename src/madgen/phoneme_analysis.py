@@ -25,6 +25,7 @@ import warnings
 from collections import deque
 from collections.abc import Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 import numpy as np
@@ -92,12 +93,24 @@ def load_transcriber(device: str, model_name: str = WHISPER_MODEL):
                                threads=(os.cpu_count() or 4) if device == "cpu" else 4)
 
 
-def transcribe_with_model(audio: np.ndarray, model, batch_size: int = 8) -> list[dict]:
-    # The voice activity detection over the whole file runs first and reports nothing.
-    progress.stage("whisperX: voice detection, then transcription (%)", 100)
-    result = model.transcribe(audio, batch_size=batch_size, language="ja", print_progress=True,
-                              progress_callback=progress.update)
-    return [s for s in result["segments"] if s.get("text", "").strip()]
+def transcribe_with_model(audio: np.ndarray, model, batch_size: int = 8, *, label: str = "WhisperX") -> list[dict]:
+    # WhisperX reports only after the first decoded batch; VAD itself has no callback.
+    _log(f"{label}: voice detection / first transcription batch")
+    progress.stage(f"{label}: voice detection / first transcription batch")
+    started = False
+
+    def update(percent: float) -> None:
+        nonlocal started
+        if not started:
+            progress.stage(f"{label}: transcription (file %)", 100)
+            started = True
+        progress.report(percent, terminal=True)
+
+    result = model.transcribe(audio, batch_size=batch_size, language="ja", print_progress=False,
+                              progress_callback=update)
+    utterances = [s for s in result["segments"] if s.get("text", "").strip()]
+    progress.stage(f"{label}: complete ({len(utterances)} utterances)")
+    return utterances
 
 
 def unload_transcriber(model) -> None:
@@ -304,36 +317,41 @@ def analyze_sources(sources: Iterable[tuple[np.ndarray, list[dict]]], device: st
     queue: deque[Future | None] = deque()
     raw: _RawSegments = []
     skipped = 0
+    completed = 0
 
     def consume() -> Iterator[list[PhonemeSegment]]:
-        nonlocal raw, skipped
+        nonlocal raw, skipped, completed
         future = queue.popleft()
         if future is None:
+            completed += 1
+            _log(f"phoneme source {completed}: CPU postprocessing complete")
             segments = _finish_source(raw, skipped)
             raw, skipped = [], 0
             yield segments
         else:
-            result, rejected = future.result()
+            waiting = progress.phase(f"phoneme source {completed + 1}: waiting for CPU postprocessing")
+            with nullcontext() if future.done() else waiting:
+                result, rejected = future.result()
             raw.extend(result)
             skipped += rejected
 
     try:
-        for audio, utterances in sources:
+        for source_index, (audio, utterances) in enumerate(sources, 1):
             if utterances and model is None:
                 progress.stage("loading phoneme model")
                 model = PhonemeModel(device)
             if workers <= 1:
                 yield analyze_utterances(audio, utterances, model) if utterances else []
                 continue
-            _log(f"  {len(utterances)} utterances; inferring phonemes with {PHONEME_MODEL}")
-            progress.stage("phoneme inference (utterances)", len(utterances))
+            _log(f"phoneme source {source_index}: {len(utterances)} utterances; inferring with {PHONEME_MODEL}")
+            progress.stage(f"phoneme source {source_index}: inference (utterances)", len(utterances))
             for ui, a0, chunk, phonemes in _utterance_chunks(audio, utterances):
                 probs = model.posteriors(chunk)
                 if pool is None:
                     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="phoneme-cpu")
                 # Copy the slice so queued work does not retain a whole long source waveform.
                 queue.append(pool.submit(_postprocess_utterance, chunk.copy(), a0, phonemes, probs, model))
-                progress.update(ui + 1)
+                progress.report(ui + 1)
                 if len(queue) >= workers * 2:
                     yield from consume()
             queue.append(None)
@@ -347,5 +365,6 @@ def analyze_sources(sources: Iterable[tuple[np.ndarray, list[dict]]], device: st
             pool.shutdown(wait=True, cancel_futures=True)
         queue.clear()
         model = None
+        progress.stage("releasing phoneme model")
         release_models(device)
 

@@ -152,7 +152,6 @@ PHONEME_ANALYZERS = ("wav2vec2",)
 
 
 def _add_phoneme_segments(conn, digest: str, path: Path, video_ref: str | None, segs) -> None:
-    progress.stage("writing phoneme segments to DB")
     conn.execute("DELETE FROM phoneme_candidates WHERE segment_id IN "
                  "(SELECT id FROM segments WHERE source_id = ? AND kind = 'phoneme')", (digest,))
     conn.execute("DELETE FROM segments WHERE source_id = ? AND kind = 'phoneme'", (digest,))
@@ -212,21 +211,27 @@ def _analyze_phonemes(conn, jobs: list[_PhonemeJob], device: str, whisper_model:
             # The filename is keyed by source content; settings invalidate incompatible transcripts.
             transcript = job.wav16.with_suffix(".transcript.json")
             if _read_transcript(transcript, settings) is not None:
-                progress.log(f"transcription pass {i}/{len(jobs)}: cached {job.path}")
+                message = f"transcription complete {i}/{len(jobs)} ({100 * i / len(jobs):.1f}%): cached {job.path}"
+                print(message, file=sys.stderr, flush=True)
+                progress.log(message)
                 continue
             progress.log(f"transcription pass {i}/{len(jobs)}: {job.path}")
             if transcriber is None:
                 transcriber = load_transcriber(device, whisper_model)
             audio, _ = sf.read(str(job.wav16), dtype="float32")
-            utterances = transcribe_with_model(audio, transcriber)
+            utterances = transcribe_with_model(audio, transcriber, label=f"WhisperX {i}/{len(jobs)}: {job.path}")
             # Atomic replacement keeps completed files reusable after an interruption.
             temporary = transcript.with_suffix(".tmp")
             temporary.write_text(json.dumps({"settings": settings, "utterances": utterances},
                                              ensure_ascii=False), encoding="utf-8")
             temporary.replace(transcript)
             del audio
+            message = f"transcription complete {i}/{len(jobs)} ({100 * i / len(jobs):.1f}%): {job.path}"
+            print(message, file=sys.stderr, flush=True)
+            progress.log(message)
     finally:
         if transcriber is not None:
+            progress.stage("releasing WhisperX and VAD")
             unload_transcriber(transcriber)
         transcriber = None
         release_models(device)
@@ -244,9 +249,13 @@ def _analyze_phonemes(conn, jobs: list[_PhonemeJob], device: str, whisper_model:
 
     # CPU inference already uses CPU threads; overlap the postprocessing only on the GPU path.
     with closing(analyze_sources(sources(), device, workers if device == "cuda" else 1)) as results:
-        for job, segs in zip(jobs, results, strict=True):
-            _add_phoneme_segments(conn, job.digest, job.path, job.video_ref, segs)
-            job.wav16.unlink()
+        for i, (job, segs) in enumerate(zip(jobs, results, strict=True), 1):
+            with progress.phase(f"writing phoneme source {i}/{len(jobs)} to DB: {job.path}"):
+                _add_phoneme_segments(conn, job.digest, job.path, job.video_ref, segs)
+                job.wav16.unlink()
+            message = f"phoneme complete {i}/{len(jobs)} ({100 * i / len(jobs):.1f}%): {job.path}"
+            print(message, file=sys.stderr, flush=True)
+            progress.log(message)
 
 
 def build_corpus(sources: list[Path], db_path: Path, workers: int | None = None,

@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 HEARTBEAT_SEC = 20.0
@@ -22,13 +23,15 @@ def _fmt(sec: float) -> str:
 
 class Progress:
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._file = None
         self._t0 = time.monotonic()
         self._stage = "starting"
         self._stage_t0 = self._t0
         self._done = 0.0
         self._total: float | None = None
+        self._last_report: float | None = None
+        self._reported_done: float | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -36,6 +39,9 @@ class Progress:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._file = path.open("a", encoding="utf-8", buffering=1)
         self._t0 = time.monotonic()
+        self._stage, self._total, self._done = "starting", None, 0.0
+        self._stage_t0 = self._t0
+        self._last_report = self._reported_done = None
         self._write(f"=== {' '.join(sys.argv)}")
         print(f"progress log: {path}", file=sys.stderr, flush=True)
         self._stop.clear()
@@ -46,15 +52,18 @@ class Progress:
         if self._file is None:
             return
         self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+            self._thread = None
         self.log(f"finished: {status} (total {_fmt(time.monotonic() - self._t0)})")
-        self._file.close()
-        self._file = None
+        with self._lock:
+            self._file.close()
+            self._file = None
 
     def _write(self, line: str) -> None:
-        if self._file is None:
-            return
         with self._lock:
-            self._file.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {line}\n")
+            if self._file is not None:
+                self._file.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {line}\n")
 
     def _status(self) -> str:
         elapsed = time.monotonic() - self._stage_t0
@@ -68,19 +77,53 @@ class Progress:
 
     def _heartbeat(self) -> None:
         while not self._stop.wait(HEARTBEAT_SEC):
-            self._write(f"alive | {self._status()}")
+            with self._lock:
+                self._write(f"alive | {self._status()}")
 
     def log(self, msg: str) -> None:
         self._write(msg)
 
     def stage(self, name: str, total: float | None = None) -> None:
-        self._stage, self._total, self._done = name, total, 0.0
-        self._stage_t0 = time.monotonic()
-        self._write(f"stage | {self._status()}")
+        with self._lock:
+            self._stage, self._total, self._done = name, total, 0.0
+            self._stage_t0 = time.monotonic()
+            self._last_report = self._reported_done = None
+            self._write(f"stage | {self._status()}")
 
     def update(self, done: float) -> None:
         """Set the progress of the current stage (in the units of its total)."""
-        self._done = done
+        with self._lock:
+            self._done = done
+
+    def report(self, done: float, *, terminal: bool = False) -> None:
+        """Record the first, final, and at most one intermediate update every five seconds."""
+        with self._lock:
+            self._done = done
+            now = time.monotonic()
+            finished = self._total is not None and done >= self._total
+            if self._last_report is None or now - self._last_report >= 5 or (
+                finished and done != self._reported_done
+            ):
+                self._last_report, self._reported_done = now, done
+                status = self._status()
+                self._write(f"progress | {status}")
+                if terminal:
+                    print(status, file=sys.stderr, flush=True)
+
+    @contextmanager
+    def phase(self, name: str):
+        """Temporarily show blocking work without losing the enclosing inference progress."""
+        with self._lock:
+            previous = (self._stage, self._total, self._done, self._stage_t0,
+                        self._last_report, self._reported_done)
+            self.stage(name)
+        try:
+            yield
+        finally:
+            with self._lock:
+                (self._stage, self._total, self._done, self._stage_t0,
+                 self._last_report, self._reported_done) = previous
+                self._write(f"resume | {self._status()}")
 
 
 progress = Progress()
