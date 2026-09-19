@@ -1,5 +1,7 @@
 # madgen — 音MAD自動生成ツール
 
+このフォークの開発・上流への PR の手順は [FORK_WORKFLOW.md](FORK_WORKFLOW.md) を参照してください。
+
 target と source（音声/動画、複数可）を渡すと、source の断片を自動で選んで切り貼りし、target を再現した音声/動画を生成します。Unit Selection TTS と同じ方式（候補の絞り込み → Viterbi DP）です。
 
 モードは2つあり、1回のレンダリングで併用できます。
